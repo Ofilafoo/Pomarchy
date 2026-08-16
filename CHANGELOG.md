@@ -11,4 +11,4 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 - Initial Omarchy bar-widget scaffold.
 - Keyboard-first and touchpad-friendly interaction requirements.
-- GitLab CI validation baseline.
+- GitHub Actions validation baseline.

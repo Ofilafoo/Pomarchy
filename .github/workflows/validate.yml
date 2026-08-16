@@ -1,0 +1,25 @@
+name: Validate
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  manifest:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate plugin structure
+        shell: bash
+        run: |
+          jq -e . manifest.json >/dev/null
+          test "$(jq -r .schemaVersion manifest.json)" = "1"
+          test "$(jq -r .id manifest.json)" = "io.github.ofilafoo.pomarchy"
+          test "$(jq -r '.kinds | index("bar-widget") != null' manifest.json)" = "true"
+          test "$(jq -r .entryPoints.barWidget manifest.json)" = "BarWidget.qml"
+          test -f "$(jq -r .entryPoints.barWidget manifest.json)"
+          test -f README.md
+          test -f LICENSE

@@ -4,7 +4,7 @@ import qs.Ui
 
 BarWidget {
   id: root
-  moduleName: "io.gitlab.ofilafoo.pomarchy"
+  moduleName: "io.github.ofilafoo.pomarchy"
 
   readonly property bool opened: panelLoader.item
     ? panelLoader.item.opened === true

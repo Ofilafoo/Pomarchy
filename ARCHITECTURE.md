@@ -25,7 +25,7 @@ phase completion independent of the QML process.
 Pomarchy will own only this directory:
 
 ```text
-~/.local/state/omarchy/io.gitlab.ofilafoo.pomarchy/
+~/.local/state/omarchy/io.github.ofilafoo.pomarchy/
 ```
 
 State writes will be atomic and actions serialized with `flock`. Shared

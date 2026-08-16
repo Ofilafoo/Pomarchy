@@ -37,8 +37,11 @@ the shell plugins. Do not edit files under `/usr/share/omarchy/`.
 
 ## Installation
 
-The public installation URL will be added after the GitLab repository has
-been created and released.
+Pomarchy is not released yet. Once the first release is ready, install it with:
+
+```sh
+omarchy plugin add https://github.com/Ofilafoo/Pomarchy.git --enable
+```
 
 ## Usage
 
@@ -54,15 +57,9 @@ documented here once those resources exist.
 
 ## Plugin identity
 
-- Plugin ID: `io.gitlab.ofilafoo.pomarchy`
+- Plugin ID: `io.github.ofilafoo.pomarchy`
 - Plugin kind: `bar-widget`
 - Default bar section: `right`
-
-## Publishing note
-
-The Omarchy Plugin Marketplace currently requires a public GitHub repository.
-The primary project may live on GitLab, but marketplace submission will also
-require a public GitHub mirror unless that policy changes.
 
 ## License
 

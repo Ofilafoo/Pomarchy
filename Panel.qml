@@ -5,7 +5,7 @@ import qs.Ui
 
 Panel {
   id: root
-  moduleName: "io.gitlab.ofilafoo.pomarchy"
+  moduleName: "io.github.ofilafoo.pomarchy"
   manageIpc: false
 
   property var anchorItem: null
