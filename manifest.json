@@ -1,0 +1,22 @@
+{
+  "schemaVersion": 1,
+  "id": "io.github.ofilafoo.pomarchy",
+  "name": "Pomarchy",
+  "version": "1.0.0",
+  "author": "Ofilafoo",
+  "license": "MIT",
+  "description": "A touchpad-friendly, keyboard-first Pomodoro timer for the Omarchy bar.",
+  "kinds": [
+    "bar-widget"
+  ],
+  "entryPoints": {
+    "barWidget": "BarWidget.qml"
+  },
+  "barWidget": {
+    "displayName": "Pomarchy",
+    "description": "Run focus sessions and breaks from the Omarchy bar.",
+    "category": "Time",
+    "allowMultiple": false,
+    "defaultSection": "right"
+  }
+}

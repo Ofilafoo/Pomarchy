@@ -1,0 +1,10 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+unit=""
+for argument in "$@"; do
+  [[ $argument == --unit=* ]] && unit="${argument#--unit=}"
+done
+[[ -z ${POMARCHY_TEST_RUN_LOG:-} ]] || printf '%s\n' "$unit" >>"$POMARCHY_TEST_RUN_LOG"
+[[ ${POMARCHY_TEST_SCHEDULE_FAIL:-false} != true ]]
+[[ -z ${POMARCHY_TEST_ACTIVE_UNIT:-} || $unit != "$POMARCHY_TEST_ACTIVE_UNIT" ]]

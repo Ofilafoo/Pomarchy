@@ -1,0 +1,21 @@
+*.bak
+*.bak.*
+*~
+.#*
+*.swp
+*.swo
+*.log
+*.tmp
+*.temp
+.cache/
+.test-artifacts/
+test-results/
+state/
+*.state
+preview-source/
+
+# Private planning, QA, and agent working notes must never be published.
+/.internal/
+/QA_FINDINGS.md
+/QA_*.md
+/REQUIREMENTS.md

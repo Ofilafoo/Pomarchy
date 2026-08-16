@@ -1,0 +1,48 @@
+name: Validate
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  manifest:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate plugin structure
+        shell: bash
+        run: |
+          jq -e . manifest.json >/dev/null
+          test "$(jq -r .schemaVersion manifest.json)" = "1"
+          test "$(jq -r .id manifest.json)" = "io.github.ofilafoo.pomarchy"
+          test "$(jq -r '.kinds | index("bar-widget") != null' manifest.json)" = "true"
+          test "$(jq -r .entryPoints.barWidget manifest.json)" = "BarWidget.qml"
+          test -f "$(jq -r .entryPoints.barWidget manifest.json)"
+          test -f README.md
+          test -f LICENSE
+          test -f Model.js
+          test -x pomarchy
+          test -x cleanup
+          bash -n pomarchy cleanup
+          test -x tests/test-cli.sh
+          test -x tests/bin/systemctl
+          test -x tests/bin/systemd-run
+      - name: Test timer state machine
+        shell: bash
+        run: tests/test-cli.sh
+      - name: Reject internal artifacts
+        shell: bash
+        run: |
+          test ! -e QA_FINDINGS.md
+          test -z "$(find . -maxdepth 1 -type f -name 'QA_*.md' -print -quit)"
+          test ! -e REQUIREMENTS.md
+          test ! -d .internal
+      - name: Check repository hygiene
+        shell: bash
+        run: |
+          home_pattern='/''home/[^ /]+'
+          ! grep -RInE --exclude-dir=.git "$home_pattern" .
+          ! grep -RInE --exclude-dir=.git '[[:alnum:]._%+-]+@[[:alnum:].-]+\.[[:alpha:]]{2,}' .
