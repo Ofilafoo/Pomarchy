@@ -43,5 +43,6 @@ jobs:
       - name: Check repository hygiene
         shell: bash
         run: |
-          ! rg -n '/home/[^ /]+' .
-          ! rg -n '[[:alnum:]._%+-]+@[[:alnum:].-]+\.[[:alpha:]]{2,}' .
+          home_pattern='/''home/[^ /]+'
+          ! grep -RInE --exclude-dir=.git "$home_pattern" .
+          ! grep -RInE --exclude-dir=.git '[[:alnum:]._%+-]+@[[:alnum:].-]+\.[[:alpha:]]{2,}' .
