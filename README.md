@@ -32,9 +32,9 @@ schedule the next phase without colliding with its own still-loaded unit.
 
 ## Local development
 
-The functional and quality baseline is defined in
-[REQUIREMENTS.md](REQUIREMENTS.md). The planned runtime structure is described
-in [ARCHITECTURE.md](ARCHITECTURE.md).
+The runtime structure and safety model are described in
+[ARCHITECTURE.md](ARCHITECTURE.md). Repository contributions should follow
+[CONTRIBUTING.md](CONTRIBUTING.md).
 
 Validate the plugin folder:
 

@@ -33,3 +33,15 @@ jobs:
       - name: Test timer state machine
         shell: bash
         run: tests/test-cli.sh
+      - name: Reject internal artifacts
+        shell: bash
+        run: |
+          test ! -e QA_FINDINGS.md
+          test -z "$(find . -maxdepth 1 -type f -name 'QA_*.md' -print -quit)"
+          test ! -e REQUIREMENTS.md
+          test ! -d .internal
+      - name: Check repository hygiene
+        shell: bash
+        run: |
+          ! rg -n '/home/[^ /]+' .
+          ! rg -n '[[:alnum:]._%+-]+@[[:alnum:].-]+\.[[:alpha:]]{2,}' .
