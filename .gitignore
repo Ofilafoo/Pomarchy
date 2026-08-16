@@ -1,0 +1,15 @@
+*.bak
+*.bak.*
+*~
+.#*
+*.swp
+*.swo
+*.log
+*.tmp
+*.temp
+.cache/
+.test-artifacts/
+test-results/
+state/
+*.state
+preview-source/

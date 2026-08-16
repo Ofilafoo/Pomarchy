@@ -1,0 +1,17 @@
+stages:
+  - validate
+
+validate:
+  stage: validate
+  image: alpine:3.22
+  before_script:
+    - apk add --no-cache jq
+  script:
+    - jq -e . manifest.json >/dev/null
+    - test "$(jq -r .schemaVersion manifest.json)" = "1"
+    - test "$(jq -r .id manifest.json)" = "io.gitlab.ofilafoo.pomarchy"
+    - test "$(jq -r '.kinds | index("bar-widget") != null' manifest.json)" = "true"
+    - test "$(jq -r .entryPoints.barWidget manifest.json)" = "BarWidget.qml"
+    - test -f "$(jq -r .entryPoints.barWidget manifest.json)"
+    - test -f README.md
+    - test -f LICENSE
