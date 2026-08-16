@@ -1,0 +1,353 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+plugin_id="io.github.ofilafoo.pomarchy"
+state_dir="${HOME}/.local/state/omarchy/${plugin_id}"
+state_file="${state_dir}/session.json"
+settings_file="${state_dir}/settings.json"
+lock_dir="${HOME}/.local/state/omarchy/.locks"
+lock_file="${lock_dir}/${plugin_id}.lock"
+legacy_lock_file="${state_dir}/operation.lock"
+unit_base="omarchy-pomarchy-io-github-ofilafoo"
+installed_command="${HOME}/.config/omarchy/plugins/${plugin_id}/pomarchy"
+
+mkdir -p "$lock_dir"
+exec 9>"$lock_file"
+flock 9
+# Releases before the stable coordination lock used operation.lock inside the
+# session directory. If it exists, join that lock domain while holding the new
+# lock as well. It must not be unlinked: an already waiting legacy process may
+# still hold its inode and would otherwise run outside the new lock domain.
+if [[ -e $legacy_lock_file ]]; then
+  exec 8>"$legacy_lock_file"
+  flock 8
+fi
+mkdir -p "$state_dir"
+
+action="${1:-status}"
+
+now_epoch() { date +%s; }
+today() { date +%F; }
+
+atomic_json() {
+  local target="$1" value="$2" temporary
+  temporary="$(mktemp "${target}.XXXXXX")"
+  printf '%s\n' "$value" | jq -e . >"$temporary"
+  chmod 600 "$temporary"
+  mv "$temporary" "$target"
+}
+
+default_settings() {
+  jq -nc '{schemaVersion:1,focusMinutes:25,shortBreakMinutes:5,longBreakMinutes:15,longBreakAfter:4,showCountdown:true,autoStart:false,notifications:true,sound:false}'
+}
+
+duration_for() {
+  case "$1" in
+    focus) jq -r '.focusMinutes * 60' <<<"$settings" ;;
+    short-break) jq -r '.shortBreakMinutes * 60' <<<"$settings" ;;
+    long-break) jq -r '.longBreakMinutes * 60' <<<"$settings" ;;
+    *) return 1 ;;
+  esac
+}
+
+default_state() {
+  local duration
+  duration="$(duration_for focus)"
+  jq -nc --argjson duration "$duration" --arg day "$(today)" \
+    '{schemaVersion:1,status:"ready",phase:"focus",startedAt:0,endsAt:0,remainingSeconds:$duration,durationSeconds:$duration,completedInCycle:0,transitionId:"",unitSlot:"",daily:{date:$day,focusSessions:0,focusSeconds:0}}'
+}
+
+valid_settings() {
+  jq -e '
+    .schemaVersion == 1 and
+    (.focusMinutes as $v | ($v|type) == "number" and $v >= 1 and $v <= 120 and ($v|floor) == $v) and
+    (.shortBreakMinutes as $v | ($v|type) == "number" and $v >= 1 and $v <= 60 and ($v|floor) == $v) and
+    (.longBreakMinutes as $v | ($v|type) == "number" and $v >= 1 and $v <= 120 and ($v|floor) == $v) and
+    (.longBreakAfter as $v | ($v|type) == "number" and $v >= 1 and $v <= 12 and ($v|floor) == $v) and
+    has("showCountdown") and (.showCountdown|type) == "boolean" and
+    (.autoStart|type) == "boolean" and (.notifications|type) == "boolean" and (.sound|type) == "boolean"
+  ' >/dev/null 2>&1 <<<"$1"
+}
+
+valid_state() {
+  jq -e '
+    .schemaVersion == 1 and
+    (.status as $status | ["ready","running","paused"] | index($status)) != null and
+    (.phase as $phase | ["focus","short-break","long-break"] | index($phase)) != null and
+    (.startedAt as $v | ($v|type) == "number" and $v >= 0 and ($v|floor) == $v) and
+    (.endsAt as $v | ($v|type) == "number" and $v >= 0 and ($v|floor) == $v) and
+    (.remainingSeconds as $v | ($v|type) == "number" and $v >= 0 and ($v|floor) == $v) and
+    (.durationSeconds as $v | ($v|type) == "number" and $v > 0 and ($v|floor) == $v) and
+    (.completedInCycle as $v | ($v|type) == "number" and $v >= 0 and $v <= 12 and ($v|floor) == $v) and
+    (.transitionId|type) == "string" and
+    (.unitSlot as $slot | ["","a","b"] | index($slot)) != null and
+    (.daily.date|type) == "string" and
+    (.daily.focusSessions as $v | ($v|type) == "number" and $v >= 0 and ($v|floor) == $v) and
+    (.daily.focusSeconds as $v | ($v|type) == "number" and $v >= 0 and ($v|floor) == $v) and
+    (if .status == "running" then .endsAt > 0 and (.transitionId|length) > 0 and (.unitSlot == "a" or .unitSlot == "b") and .remainingSeconds > 0
+     elif .status == "ready" then .startedAt == 0 and .endsAt == 0 and .transitionId == "" and .unitSlot == "" and .remainingSeconds > 0
+     else .endsAt == 0 and .transitionId == "" and .unitSlot == "" and .remainingSeconds > 0 end)
+  ' >/dev/null 2>&1 <<<"$1"
+}
+
+load_data() {
+  if [[ -f $settings_file ]] && settings="$(jq -c . "$settings_file" 2>/dev/null)"; then
+    if [[ $(jq -r 'has("showCountdown")' <<<"$settings") == false ]] && jq -e '.schemaVersion == 1' >/dev/null 2>&1 <<<"$settings"; then
+      printf 'Pomarchy: migrating settings to add showCountdown.\n' >&2
+      settings="$(jq -c '.showCountdown=true' <<<"$settings")"
+      atomic_json "$settings_file" "$settings"
+    fi
+  else
+    settings=""
+  fi
+  if valid_settings "$settings"; then :; else
+    [[ ! -e $settings_file ]] || printf 'Pomarchy: invalid settings; restoring defaults.\n' >&2
+    settings="$(default_settings)"
+    atomic_json "$settings_file" "$settings"
+  fi
+
+  if [[ -f $state_file ]] && state="$(jq -c . "$state_file" 2>/dev/null)"; then
+    if [[ $(jq -r 'has("unitSlot")' <<<"$state") == false ]] && jq -e '.schemaVersion == 1 and .status != "running"' >/dev/null 2>&1 <<<"$state"; then
+      printf 'Pomarchy: migrating session state to add timer unit slot.\n' >&2
+      state="$(jq -c '.unitSlot=""' <<<"$state")"
+      atomic_json "$state_file" "$state"
+    fi
+  else
+    state=""
+  fi
+  if valid_state "$state"; then :; else
+    [[ ! -e $state_file ]] || printf 'Pomarchy: invalid session state; restoring a safe ready state.\n' >&2
+    state="$(default_state)"
+    atomic_json "$state_file" "$state"
+  fi
+
+  local day
+  day="$(today)"
+  if [[ $(jq -r '.daily.date' <<<"$state") != "$day" ]]; then
+    state="$(jq -c --arg day "$day" '.daily={date:$day,focusSessions:0,focusSeconds:0}' <<<"$state")"
+    atomic_json "$state_file" "$state"
+  fi
+
+  local cycle_limit cycle
+  cycle_limit="$(jq -r '.longBreakAfter' <<<"$settings")"
+  cycle="$(jq -r '.completedInCycle' <<<"$state")"
+  if [[ $(jq -r '.phase' <<<"$state") != long-break ]] && ((cycle >= cycle_limit)); then
+    state="$(jq -c --argjson cycle "$((cycle_limit - 1))" '.completedInCycle=$cycle' <<<"$state")"
+    atomic_json "$state_file" "$state"
+  fi
+}
+
+cancel_timers() {
+  systemctl --user stop "${unit_base}.timer" "${unit_base}-a.timer" "${unit_base}-b.timer" >/dev/null 2>&1 || true
+  systemctl --user reset-failed "${unit_base}.timer" "${unit_base}.service" \
+    "${unit_base}-a.timer" "${unit_base}-a.service" "${unit_base}-b.timer" "${unit_base}-b.service" >/dev/null 2>&1 || true
+}
+
+schedule_timer() {
+  local seconds="$1" transition="$2" slot="$3" command="$installed_command"
+  [[ -x $command ]] || command="$0"
+  systemctl --user stop "${unit_base}-${slot}.timer" >/dev/null 2>&1 || true
+  systemctl --user reset-failed "${unit_base}-${slot}.timer" "${unit_base}-${slot}.service" >/dev/null 2>&1 || true
+  systemd-run --user --quiet --unit="${unit_base}-${slot}" --on-active="${seconds}s" \
+    "$command" expire "$transition" "$slot"
+}
+
+next_unit_slot() {
+  local current_slot
+  current_slot="$(jq -r '.unitSlot' <<<"$state")"
+  if [[ $current_slot == a ]]; then printf b; else printf a; fi
+}
+
+phase_name() {
+  case "$1" in
+    focus) printf 'Focus' ;;
+    short-break) printf 'Short break' ;;
+    long-break) printf 'Long break' ;;
+  esac
+}
+
+announce_transition() {
+  local completed="$1" next="$2"
+  if [[ $(jq -r '.notifications' <<<"$settings") == true ]] && command -v notify-send >/dev/null; then
+    notify-send --app-name=Pomarchy "$(phase_name "$completed") complete" "Next: $(phase_name "$next")" >/dev/null 2>&1 || true
+  fi
+  if [[ $(jq -r '.sound' <<<"$settings") == true ]] && command -v canberra-gtk-play >/dev/null; then
+    canberra-gtk-play --id=complete >/dev/null 2>&1 || true
+  fi
+}
+
+transition() {
+  local regular="$1" completed next cycle duration auto now transition_id ready_state slot schedule_failed=false
+  completed="$(jq -r '.phase' <<<"$state")"
+  cycle="$(jq -r '.completedInCycle' <<<"$state")"
+
+  if [[ $completed == focus ]]; then
+    if [[ $regular == true ]]; then
+      cycle=$((cycle + 1))
+      state="$(jq -c --argjson cycle "$cycle" '
+        .completedInCycle=$cycle |
+        .daily.focusSessions += 1 |
+        .daily.focusSeconds += .durationSeconds
+      ' <<<"$state")"
+    fi
+    if ((cycle >= $(jq -r '.longBreakAfter' <<<"$settings"))); then
+      next="long-break"
+      cycle=0
+    else
+      next="short-break"
+    fi
+  else
+    next="focus"
+  fi
+
+  duration="$(duration_for "$next")"
+  now="$(now_epoch)"
+  transition_id="${now}-${next}-${RANDOM}"
+  auto="$(jq -r '.autoStart' <<<"$settings")"
+  ready_state="$(jq -c --arg phase "$next" --argjson duration "$duration" --argjson cycle "$cycle" '
+    .status="ready" | .phase=$phase | .startedAt=0 | .endsAt=0 |
+    .remainingSeconds=$duration | .durationSeconds=$duration | .completedInCycle=$cycle | .transitionId="" | .unitSlot=""
+  ' <<<"$state")"
+  if [[ $auto == true ]]; then
+    slot="$(next_unit_slot)"
+    state="$(jq -c --arg phase "$next" --arg transition "$transition_id" --arg slot "$slot" --argjson now "$now" --argjson duration "$duration" --argjson cycle "$cycle" '
+      .status="running" | .phase=$phase | .startedAt=$now | .endsAt=($now+$duration) |
+      .remainingSeconds=$duration | .durationSeconds=$duration | .completedInCycle=$cycle | .transitionId=$transition | .unitSlot=$slot
+    ' <<<"$state")"
+    atomic_json "$state_file" "$state"
+    if ! schedule_timer "$duration" "$transition_id" "$slot"; then
+      state="$ready_state"
+      atomic_json "$state_file" "$state"
+      schedule_failed=true
+    fi
+  else
+    cancel_timers
+    state="$ready_state"
+    atomic_json "$state_file" "$state"
+  fi
+  if [[ $regular == true ]]; then
+    announce_transition "$completed" "$next"
+  fi
+  if [[ $schedule_failed == true ]]; then
+    printf 'Pomarchy: failed to schedule the next phase; it is ready but not running.\n' >&2
+    return 1
+  fi
+}
+
+reconcile_expiry() {
+  local now
+  now="$(now_epoch)"
+  if [[ $(jq -r '.status' <<<"$state") == running ]] && (( $(jq -r '.endsAt' <<<"$state") <= now )); then
+    transition true
+  fi
+}
+
+emit_status() {
+  local now remaining
+  now="$(now_epoch)"
+  remaining="$(jq -r '.remainingSeconds' <<<"$state")"
+  if [[ $(jq -r '.status' <<<"$state") == running ]]; then
+    remaining=$(( $(jq -r '.endsAt' <<<"$state") - now ))
+    ((remaining < 0)) && remaining=0
+  fi
+  jq -c --argjson remaining "$remaining" --argjson now "$now" --argjson settings "$settings" \
+    '.remainingSeconds=$remaining | .now=$now | .settings=$settings' <<<"$state"
+}
+
+load_data
+reconcile_expiry
+
+case "$action" in
+  status)
+    emit_status
+    ;;
+  start)
+    [[ $(jq -r '.status' <<<"$state") == ready ]] || { printf 'Pomarchy: start requires ready state.\n' >&2; exit 1; }
+    now="$(now_epoch)"; remaining="$(jq -r '.remainingSeconds' <<<"$state")"; transition_id="${now}-$(jq -r '.phase' <<<"$state")-${RANDOM}"
+    previous_state="$state"
+    slot="$(next_unit_slot)"
+    state="$(jq -c --argjson now "$now" --argjson remaining "$remaining" --arg transition "$transition_id" --arg slot "$slot" '.status="running" | .startedAt=$now | .endsAt=($now+$remaining) | .transitionId=$transition | .unitSlot=$slot' <<<"$state")"
+    atomic_json "$state_file" "$state"
+    if ! schedule_timer "$remaining" "$transition_id" "$slot"; then
+      state="$previous_state"; atomic_json "$state_file" "$state"
+      printf 'Pomarchy: failed to schedule focus timer; state was restored.\n' >&2; exit 1
+    fi
+    emit_status
+    ;;
+  pause)
+    [[ $(jq -r '.status' <<<"$state") == running ]] || { printf 'Pomarchy: pause requires running state.\n' >&2; exit 1; }
+    now="$(now_epoch)"; remaining=$(( $(jq -r '.endsAt' <<<"$state") - now )); ((remaining < 1)) && remaining=1
+    cancel_timers
+    state="$(jq -c --argjson remaining "$remaining" '.status="paused" | .endsAt=0 | .remainingSeconds=$remaining | .transitionId="" | .unitSlot=""' <<<"$state")"
+    atomic_json "$state_file" "$state"; emit_status
+    ;;
+  resume)
+    [[ $(jq -r '.status' <<<"$state") == paused ]] || { printf 'Pomarchy: resume requires paused state.\n' >&2; exit 1; }
+    now="$(now_epoch)"; remaining="$(jq -r '.remainingSeconds' <<<"$state")"; transition_id="${now}-$(jq -r '.phase' <<<"$state")-${RANDOM}"
+    previous_state="$state"
+    slot="$(next_unit_slot)"
+    state="$(jq -c --argjson now "$now" --argjson remaining "$remaining" --arg transition "$transition_id" --arg slot "$slot" '.status="running" | .startedAt=$now | .endsAt=($now+$remaining) | .transitionId=$transition | .unitSlot=$slot' <<<"$state")"
+    atomic_json "$state_file" "$state"
+    if ! schedule_timer "$remaining" "$transition_id" "$slot"; then
+      state="$previous_state"; atomic_json "$state_file" "$state"
+      printf 'Pomarchy: failed to schedule resumed timer; paused state was restored.\n' >&2; exit 1
+    fi
+    emit_status
+    ;;
+  skip)
+    [[ $(jq -r '.status' <<<"$state") != ready ]] || { printf 'Pomarchy: skip requires running or paused state.\n' >&2; exit 1; }
+    transition false; emit_status
+    ;;
+  reset)
+    cancel_timers
+    phase="$(jq -r '.phase' <<<"$state")"
+    [[ $phase == focus ]] || phase="focus"
+    duration="$(duration_for "$phase")"
+    state="$(jq -c --arg phase "$phase" --argjson duration "$duration" '.status="ready" | .phase=$phase | .startedAt=0 | .endsAt=0 | .remainingSeconds=$duration | .durationSeconds=$duration | .transitionId="" | .unitSlot=""' <<<"$state")"
+    atomic_json "$state_file" "$state"; emit_status
+    ;;
+  expire)
+    expected="${2:-}"; expected_slot="${3:-}"; current="$(jq -r '.transitionId' <<<"$state")"; current_slot="$(jq -r '.unitSlot' <<<"$state")"
+    [[ $(jq -r '.status' <<<"$state") == running && -n $expected && $expected == "$current" && $expected_slot == "$current_slot" ]] || exit 0
+    (( $(jq -r '.endsAt' <<<"$state") <= $(now_epoch) )) || exit 0
+    transition true; emit_status
+    ;;
+  configure)
+    key="${2:-}"; value="${3:-}"
+    case "$key" in
+      focusMinutes) min=1; max=120 ;;
+      shortBreakMinutes) min=1; max=60 ;;
+      longBreakMinutes) min=1; max=120 ;;
+      longBreakAfter) min=1; max=12 ;;
+      showCountdown|autoStart|notifications|sound)
+        [[ $value == true || $value == false ]] || { printf 'Pomarchy: %s expects true or false.\n' "$key" >&2; exit 2; }
+        settings="$(jq -c --arg key "$key" --argjson value "$value" '.[$key]=$value' <<<"$settings")"
+        atomic_json "$settings_file" "$settings"; emit_status; exit 0 ;;
+      *) printf 'Pomarchy: unknown setting %s.\n' "$key" >&2; exit 2 ;;
+    esac
+    [[ $value =~ ^[0-9]+$ ]] && ((value >= min && value <= max)) || { printf 'Pomarchy: %s expects %d-%d.\n' "$key" "$min" "$max" >&2; exit 2; }
+    settings="$(jq -c --arg key "$key" --argjson value "$value" '.[$key]=$value' <<<"$settings")"
+    atomic_json "$settings_file" "$settings"; emit_status
+    ;;
+  defaults)
+    settings="$(default_settings)"
+    atomic_json "$settings_file" "$settings"
+    if [[ $(jq -r '.status' <<<"$state") == ready ]]; then
+      phase="$(jq -r '.phase' <<<"$state")"
+      duration="$(duration_for "$phase")"
+      state="$(jq -c --argjson duration "$duration" '.remainingSeconds=$duration | .durationSeconds=$duration' <<<"$state")"
+      atomic_json "$state_file" "$state"
+    fi
+    emit_status
+    ;;
+  cleanup)
+    cancel_timers
+    systemctl --user stop "${unit_base}.service" "${unit_base}-a.service" "${unit_base}-b.service" >/dev/null 2>&1 || true
+    rm -f "$state_file" "$settings_file"
+    rmdir "$state_dir" >/dev/null 2>&1 || true
+    ;;
+  *)
+    printf 'usage: %s status|start|pause|resume|skip|reset|expire TRANSITION_ID UNIT_SLOT|configure KEY VALUE|defaults|cleanup\n' "$0" >&2
+    exit 2
+    ;;
+esac

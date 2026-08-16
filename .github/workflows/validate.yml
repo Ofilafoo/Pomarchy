@@ -23,3 +23,13 @@ jobs:
           test -f "$(jq -r .entryPoints.barWidget manifest.json)"
           test -f README.md
           test -f LICENSE
+          test -f Model.js
+          test -x pomarchy
+          test -x cleanup
+          bash -n pomarchy cleanup
+          test -x tests/test-cli.sh
+          test -x tests/bin/systemctl
+          test -x tests/bin/systemd-run
+      - name: Test timer state machine
+        shell: bash
+        run: tests/test-cli.sh
